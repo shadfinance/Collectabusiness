@@ -5224,20 +5224,29 @@ function itemAmount(type,x){
   if(type==='Permintaan DP')return qty*itemRateDP(x);
   return (qty*itemRateDasar(x))+(qty*itemFee(x));
 }
+/* Total DP = Pax x Rate DP (semua baris tiket). */
+function dpItemsTotal(i){
+  return (i.items||[]).reduce((a,x)=>a+(num(x.qty)*itemRateDP(x)),0);
+}
+/* Permintaan DP selalu otomatis. Kekurangan DP otomatis bila Rate DP terisi;
+   invoice Kekurangan DP lama (nominal manual, tanpa Rate DP) tetap memakai
+   nominal manual yang sudah tersimpan supaya tidak berubah jadi Rp 0. */
+function isDPAuto(i){
+  const t=invoiceTypeOf(i);
+  return t==='Permintaan DP'||(t==='Kekurangan DP'&&dpItemsTotal(i)>0);
+}
 function calcNeedDeposit(i){
-  if(invoiceTypeOf(i)==='Permintaan DP'){
-    return (i.items||[]).reduce((a,x)=>a+(num(x.qty)*itemRateDP(x)),0);
-  }
+  if(isDPAuto(i))return dpItemsTotal(i);
   return num(i.needDeposit);
 }
 /* Need Deposit yang ditampilkan ke user = Total Kebutuhan DP (Rate DP x Pax)
    dikurangi Total Seluruh Pembayaran yang sudah masuk (realtime, termasuk
    payment record dari Cloud/Supabase via invCalc). Tidak pernah negatif:
    jika pembayaran sudah menutupi/melebihi kebutuhan DP, tampilkan Rp 0.
-   Untuk jenis invoice selain Permintaan DP (mis. Kekurangan DP yang nilainya
-   diisi manual), nilai tidak diubah/tidak ikut dipotong pembayaran. */
+   Kekurangan DP memakai rumus yang sama: (Pax x Rate DP) - Jumlah terbayar.
+   Jenis lain (Normal/Refund) nilainya tidak ikut dipotong pembayaran. */
 function calcNeedDepositRemaining(i){
-  if(invoiceTypeOf(i)!=='Permintaan DP')return num(i.needDeposit);
+  if(!isDPAuto(i))return num(i.needDeposit);
   let totalDP=calcNeedDeposit(i);
   let paid=invCalc(i).paid;
   let remaining=totalDP-paid;
@@ -5452,7 +5461,7 @@ function ivFieldMoneyInput(el,k){
 function ivSetInvoiceType(type){
   ivDraft.invoiceType=invoiceTypeOf({...ivDraft,invoiceType:type});
   if(ivDraft.invoiceType==='Normal')ivDraft.needDeposit=0;
-  if(ivDraft.invoiceType==='Permintaan DP')ivDraft.needDeposit=calcNeedDeposit(ivDraft);
+  if(ivDraft.invoiceType==='Permintaan DP'||ivDraft.invoiceType==='Kekurangan DP')ivDraft.needDeposit=calcNeedDeposit(ivDraft);
   if(ivDraft.invoiceType==='Refund'){
     ivDraft.needDeposit=0;
     /* Tambahkan otomatis 1 baris Detail Tiket Refund bila belum ada. */
@@ -5480,12 +5489,12 @@ function ivUpdateTypeFields(){
   const typeHelp=document.getElementById('ivTypeHelp');
   if(field)field.style.display=(type==='Normal'||isRefund)?'none':'block';
   if(label)label.textContent=isDP?'Need Deposit':isShort?'Kekurangan DP':'Need Deposit / Kekurangan DP';
-  if(typeHelp)typeHelp.textContent=isDP?'Permintaan DP: nominal DP dihitung otomatis dari Rate DP × Pax.':isShort?'Kekurangan DP: isi nominal kekurangan DP secara manual. Nilai tagihan invoice tetap mengikuti Rate Dasar pada Detail Tiket.':isRefund?'Refund: baris Detail Tiket bertanda Refund otomatis dibuat, dicetak merah, dan nilainya (Pax × Rate Dasar Refund) otomatis negatif serta mengurangi Total Bill.':'Invoice Normal: menggunakan Rate Dasar sebagai nilai tagihan.';
-  if(help)help.textContent=isDP?'Otomatis mengikuti Rate DP dan Pax pada detail tiket, dikurangi pembayaran yang sudah masuk.':isShort?'Nominal ini hanya catatan kekurangan DP, tidak mengubah nilai total invoice.':'';
+  if(typeHelp)typeHelp.textContent=isDP?'Permintaan DP: nominal DP dihitung otomatis dari Rate DP × Pax.':isShort?'Kekurangan DP: nominal dihitung otomatis = (Pax × Rate DP) − Jumlah terbayar. Nilai tagihan invoice tetap mengikuti Rate Dasar pada Detail Tiket.':isRefund?'Refund: baris Detail Tiket bertanda Refund otomatis dibuat, dicetak merah, dan nilainya (Pax × Rate Dasar Refund) otomatis negatif serta mengurangi Total Bill.':'Invoice Normal: menggunakan Rate Dasar sebagai nilai tagihan.';
+  if(help)help.textContent=isDP?'Otomatis mengikuti Rate DP dan Pax pada detail tiket, dikurangi pembayaran yang sudah masuk.':isShort?'Otomatis mengikuti Rate DP dan Pax pada detail tiket, dikurangi pembayaran yang sudah masuk. Tidak mengubah nilai total invoice.':'';
   if(input){
-    input.readOnly=isDP;
-    input.style.background=isDP?'#f4f5f8':'#fff';
-    const val=isDP?calcNeedDepositRemaining(ivDraft):num(ivDraft.needDeposit);
+    input.readOnly=isDP||isShort;
+    input.style.background=(isDP||isShort)?'#f4f5f8':'#fff';
+    const val=(isDP||isShort)?calcNeedDepositRemaining(ivDraft):num(ivDraft.needDeposit);
     input.value=val?Number(val).toLocaleString('id-ID'):'';
   }
 }
@@ -5579,7 +5588,7 @@ function ivItem(n,k,v,isNum){
   /* Cache nilai Total Kebutuhan DP (dipakai saat submit/validasi). Tampilan
      input Need Deposit sendiri di-refresh otomatis di dalam ivTotals(),
      supaya selalu terpotong Total Pembayaran secara realtime. */
-  if((k==='qty'||k==='rateDP')&&type==='Permintaan DP'){
+  if((k==='qty'||k==='rateDP')&&(type==='Permintaan DP'||type==='Kekurangan DP')){
     ivDraft.needDeposit=calcNeedDeposit(ivDraft);
   }
 
@@ -5589,7 +5598,7 @@ function ivItem(n,k,v,isNum){
 function ivRenderItems(){
   let box=document.getElementById('ivRows');if(!box)return;
   const type=invoiceTypeOf(ivDraft);
-  const showDP=type==='Permintaan DP';
+  const showDP=type==='Permintaan DP'||type==='Kekurangan DP';
   const head=document.querySelector('.iv-ratedp-head');if(head)head.style.display=showDP?'table-cell':'none';
   const dasar=document.querySelector('.iv-ratedasar-head');if(dasar)dasar.textContent=type==='Normal'?'Rate Dasar':'Rate Dasar';
   box.innerHTML=ivDraft.items.map((x,n)=>{
@@ -5625,13 +5634,13 @@ function ivTotals(){
   <div class="big"><span>Sisa Piutang</span><b>${rp(c.sisa)}</b></div>`;
   ivRefreshNeedDepositDisplay();
 }
-/* Refresh realtime nilai input Need Deposit (khusus jenis Permintaan DP):
+/* Refresh realtime nilai input Need Deposit (jenis Permintaan DP & Kekurangan DP):
    Need Deposit = Total Rate DP x PAX - Total Seluruh Pembayaran (min. Rp 0).
    Dipanggil setiap kali ivTotals() jalan, yaitu setiap ada perubahan pada
    detail tiket ATAU payment record (tambah/ubah/hapus pembayaran), sehingga
    selalu tersinkron secara realtime tanpa perlu langkah tambahan. */
 function ivRefreshNeedDepositDisplay(){
-  if(invoiceTypeOf(ivDraft)!=='Permintaan DP')return;
+  if(!['Permintaan DP','Kekurangan DP'].includes(invoiceTypeOf(ivDraft)))return;
   const nd=document.getElementById('ivNeedDeposit');
   if(!nd)return;
   const val=calcNeedDepositRemaining(ivDraft);
@@ -5669,8 +5678,8 @@ function submitInvoice(e){
     i.needDeposit=calcNeedDeposit(i);
     if(i.needDeposit<=0){alert('Rate DP dan Pax wajib diisi untuk Invoice Permintaan DP.');return}
   }else if(i.invoiceType==='Kekurangan DP'){
-    i.needDeposit=num(i.needDeposit);
-    if(i.needDeposit<=0){alert('Nominal Kekurangan DP wajib diisi.');return}
+    i.needDeposit=dpItemsTotal(i);
+    if(i.needDeposit<=0){alert('Rate DP dan Pax wajib diisi untuk Invoice Kekurangan DP.');return}
   }else{
     i.needDeposit=0;
   }
@@ -5852,8 +5861,8 @@ function invoiceSheetHTML(i){
            dibayar (Total Kebutuhan DP - Total Pembayaran, floor Rp 0), bukan
            lagi nominal DP awal. c.sisa dari invCalc(i) sudah = dpTotal-paid
            untuk jenis Permintaan DP; Math.max(...,0) mencegah nilai negatif
-           saat pembayaran melebihi kebutuhan DP. Kekurangan DP tetap manual. */
-        const ndVal=printType==='Permintaan DP'?Math.max(0,c.sisa):num(i.needDeposit);
+           saat pembayaran melebihi kebutuhan DP. Kekurangan DP = (Pax x Rate DP) - terbayar. */
+        const ndVal=printType==='Permintaan DP'?Math.max(0,c.sisa):(printType==='Kekurangan DP'?calcNeedDepositRemaining(i):num(i.needDeposit));
         return rowsArr.slice(0,mid).join('')+((printType==='Permintaan DP'||printType==='Kekurangan DP')&&ndVal>0?`<tr class="need-deposit-row"><td colspan="3"><div class="need-deposit-box">${printType==='Permintaan DP'?'Need Deposit':'Kekurangan DP'} ${rp(ndVal)}</div></td></tr>`:'')+rowsArr.slice(mid).join('')})()}
         </tbody><tfoot><tr class="total-payment"><th>TOTAL PAYMENT</th><th></th><th class="r">${rpSplit(c.paid)}</th></tr></tfoot></table>
       </div>
